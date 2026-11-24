@@ -6,20 +6,23 @@ private enum WellnessTheme {
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
     static let ink = Color(uiColor: .label)
     static let secondaryInk = Color(uiColor: .secondaryLabel)
-    static let accent = Color(red: 0.08, green: 0.48, blue: 0.40)
-    static let accentDeep = Color(red: 0.03, green: 0.25, blue: 0.22)
-    static let accentMint = Color(red: 0.78, green: 0.93, blue: 0.87)
+    static let accent = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.70, green: 0.67, blue: 1, alpha: 1)
+            : UIColor(red: 0.35, green: 0.32, blue: 0.88, alpha: 1)
+    })
+    static let accentDeep = Color(red: 0.16, green: 0.15, blue: 0.45)
+    static let accentMint = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.24, green: 0.22, blue: 0.40, alpha: 1)
+            : UIColor(red: 0.85, green: 0.84, blue: 0.99, alpha: 1)
+    })
     static let warm = Color(red: 0.96, green: 0.62, blue: 0.30)
     static let danger = Color(red: 0.83, green: 0.20, blue: 0.22)
     static let gradient = LinearGradient(
-        colors: [accentDeep, accent],
+        colors: [accentDeep, Color(red: 0.35, green: 0.32, blue: 0.88), Color(red: 0.42, green: 0.57, blue: 0.96)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
-    )
-    static let canvasGradient = LinearGradient(
-        colors: [accentMint.opacity(0.34), canvas],
-        startPoint: .topLeading,
-        endPoint: .center
     )
 }
 
@@ -28,6 +31,9 @@ struct ContentView: View {
     @StateObject private var health = HealthKitManager()
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selectedPage = 0
+    @State private var appeared = false
     @ScaledMetric(relativeTo: .largeTitle) private var weightFontSize = 64
 
     @State private var profile = UserProfile.load()
@@ -43,8 +49,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                WellnessTheme.canvasGradient
-                    .ignoresSafeArea()
+                AmbientCanvas()
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 20) {
@@ -56,16 +61,19 @@ struct ContentView: View {
                         if let pending = ble.pendingMeasurement {
                             ownershipCard(pending)
                         }
-                        primaryMeasurement
-
-                        if let measurement = ble.lastMeasurement {
-                            metricsSection(measurement)
+                        if selectedPage == 0 {
+                            primaryMeasurement
+                            if let measurement = ble.lastMeasurement {
+                                metricsSection(measurement)
+                            } else {
+                                gettingStartedCard
+                            }
                         } else {
-                            gettingStartedCard
-                        }
-
-                        if !records.isEmpty {
-                            confirmedHistoryCard
+                            if !records.isEmpty {
+                                confirmedHistoryCard
+                            } else {
+                                emptyHistory
+                            }
                         }
 
                         measurementTip
@@ -73,19 +81,20 @@ struct ContentView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
                     .padding(.bottom, 24)
+                    .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared || reduceMotion ? 0 : 16)
                 }
+                .id(selectedPage)
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color.clear.frame(height: 0).background(.ultraThinMaterial)
-            }
-            .safeAreaInset(edge: .bottom) {
-                actionButton
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                floatingControls
                     .padding(.horizontal, 20)
                     .padding(.top, 10)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
-                    .background(.ultraThinMaterial)
             }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $activeSheet) { destination in
@@ -94,6 +103,11 @@ struct ContentView: View {
                     ProfileView(profile: $profile)
                 }
             }
+            .onAppear {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.55)) { appeared = true }
+            }
+            .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: selectedPage)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: ble.pendingMeasurement?.id)
             .task {
                 ble.onMeasurementReady = { _ in
                     records = ConfirmedMeasurements.load()
@@ -116,6 +130,54 @@ struct ContentView: View {
         .tint(WellnessTheme.accent)
     }
 
+    private var emptyHistory: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "chart.xyaxis.line")
+                .font(.system(size: 44, weight: .light)).foregroundStyle(WellnessTheme.accent)
+            Text("变化，值得慢慢看").font(.title2.bold())
+            Text("完成并确认第一次测量后，记录会出现在这里。\n积累两条记录，就能看到你的体重曲线。")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 48).padding(.horizontal, 20)
+        .background(WellnessTheme.card, in: RoundedRectangle(cornerRadius: 28))
+    }
+
+    @ViewBuilder private var floatingControls: some View {
+        if #available(iOS 26, *) {
+            GlassEffectContainer(spacing: 16) { controlContents }
+        } else {
+            controlContents
+        }
+    }
+
+    private var controlContents: some View {
+        VStack(spacing: 12) {
+            actionButton.padding(8)
+                .modifier(GlassSurface(radius: 26))
+            HStack(spacing: 6) {
+                pageButton("今日", icon: "square.grid.2x2.fill", page: 0)
+                pageButton("趋势", icon: "chart.xyaxis.line", page: 1)
+            }
+            .padding(6)
+            .modifier(GlassSurface(radius: 28))
+        }
+    }
+
+    private func pageButton(_ title: String, icon: String, page: Int) -> some View {
+        Button {
+            fireHaptic()
+            selectedPage = page
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundStyle(selectedPage == page ? WellnessTheme.accent : WellnessTheme.secondaryInk)
+                .background(selectedPage == page ? WellnessTheme.accent.opacity(0.13) : .clear, in: Capsule())
+        }
+        .buttonStyle(SoftPressStyle())
+        .accessibilityAddTraits(selectedPage == page ? .isSelected : [])
+    }
+
     // MARK: - Header
 
     private var header: some View {
@@ -125,12 +187,12 @@ struct ContentView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(WellnessTheme.secondaryInk)
 
-                Text("身体记录")
+                Text(selectedPage == 0 ? "身体的小日常" : "每一步，都算数")
                     .font(.system(.largeTitle, design: .rounded).weight(.bold))
                     .foregroundStyle(WellnessTheme.ink)
 
                 if !dynamicTypeSize.isAccessibilitySize {
-                    Text(profile.autoConnect ? "靠近并唤醒秤，数据自动同步" : "记录每一次变化，了解自己的节奏")
+                    Text(selectedPage == 0 ? "SCALE  /  今天也照顾好自己" : "YOUR RHYTHM  /  发现自己的节奏")
                         .font(.subheadline)
                         .foregroundStyle(WellnessTheme.secondaryInk)
                 }
@@ -142,14 +204,14 @@ struct ContentView: View {
                 activeSheet = .profile
                 fireHaptic()
             } label: {
-                Image(systemName: "person.crop.circle.fill")
+                Image(systemName: "slider.horizontal.3")
                     .font(.title2)
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(WellnessTheme.accent)
                     .frame(width: 48, height: 48)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.55), lineWidth: 1))
+                    .modifier(GlassSurface(radius: 24, interactive: true))
             }
+            .buttonStyle(SoftPressStyle())
             .accessibilityLabel("打开我的资料")
         }
     }
@@ -207,9 +269,12 @@ struct ContentView: View {
         } else if let measurement = ble.lastMeasurement {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Label(Calendar.current.isDateInToday(measurement.date) ? "今日最近测量" : "最近一次测量", systemImage: "clock.arrow.circlepath")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.78))
+                    HStack(spacing: 10) {
+                        ScaleEmblem().frame(width: 38, height: 38)
+                        Text(Calendar.current.isDateInToday(measurement.date) ? "今日最近测量" : "最近一次测量")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.86))
+                    }
 
                     Spacer()
 
@@ -229,6 +294,7 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.72))
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(String(format: "%.2f", measurement.weightKg))
+                            .modifier(AnimatedReading(value: measurement.weightKg))
                             .foregroundStyle(.white)
                             .monospacedDigit()
                             .font(.system(size: weightFontSize, weight: .bold, design: .rounded))
@@ -258,26 +324,19 @@ struct ContentView: View {
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WellnessTheme.gradient, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .background(WellnessTheme.gradient, in: RoundedRectangle(cornerRadius: 32, style: .continuous))
             .overlay(alignment: .topTrailing) {
-                Circle()
-                    .fill(.white.opacity(0.08))
-                    .frame(width: 138, height: 138)
-                    .blur(radius: 1)
-                    .offset(x: 40, y: -45)
-                    .allowsHitTesting(false)
+                DialArtwork().frame(width: 130, height: 130)
+                    .opacity(0.25).padding(12).allowsHitTesting(false).accessibilityHidden(true)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
             .shadow(color: WellnessTheme.accentDeep.opacity(0.16), radius: 16, y: 8)
             .accessibilityElement(children: .combine)
         } else {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Image(systemName: "figure.stand")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 50, height: 50)
-                        .background(.white.opacity(0.16), in: Circle())
+                    ScaleEmblem()
+                        .frame(width: 64, height: 64)
 
                     Spacer()
 
@@ -287,8 +346,8 @@ struct ContentView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("建立你的第一条记录")
-                        .font(.title2.weight(.bold))
+                    Text("轻轻上秤，\n认识今天的自己。")
+                        .font(.system(.largeTitle, design: .rounded).weight(.bold))
                         .foregroundStyle(.white)
                     Text(profile.autoConnect ? "打开蓝牙并唤醒体脂秤，光脚上秤即可。首次读数会请你确认本人。" : "先填写身体资料，再点击下方连接体脂秤。首次读数会请你确认本人。")
                         .font(.subheadline)
@@ -305,17 +364,21 @@ struct ContentView: View {
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WellnessTheme.gradient, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .background(WellnessTheme.gradient, in: RoundedRectangle(cornerRadius: 32, style: .continuous))
             .shadow(color: WellnessTheme.accentDeep.opacity(0.22), radius: 22, y: 12)
         }
     }
 
     private func liveMeasurementCard(_ weight: Double) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("正在读取本次体重", systemImage: "waveform.path.ecg")
-                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 12) {
+                ScaleEmblem().frame(width: 44, height: 44)
+                Label("正在读取本次体重", systemImage: "waveform.path.ecg")
+                    .font(.subheadline.weight(.semibold))
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(String(format: "%.2f", weight))
+                    .modifier(AnimatedReading(value: weight))
                     .font(.system(size: weightFontSize, weight: .bold, design: .rounded))
                     .monospacedDigit().minimumScaleFactor(0.6).lineLimit(1)
                 Text("kg").font(.title3.weight(.semibold))
@@ -352,7 +415,7 @@ struct ContentView: View {
 
     private func metricsSection(_ measurement: Measurement) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "更多身体指标", subtitle: "对应最近已保存记录")
+            sectionHeader(title: "身体拼图", subtitle: "最近记录 · 成分为估算")
 
             LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                 MetricTile(icon: "drop.fill", label: "水分率", value: String(format: "%.1f%%", measurement.waterPercent), tint: Color.blue)
@@ -468,8 +531,13 @@ struct ContentView: View {
                 Chart(Array(chronological)) { measurement in
                     LineMark(x: .value("日期", measurement.date), y: .value("体重 kg", measurement.weightKg))
                         .foregroundStyle(WellnessTheme.accent)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
+                    AreaMark(x: .value("日期", measurement.date), yStart: .value("基线", low - 1), yEnd: .value("体重 kg", measurement.weightKg))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(LinearGradient(colors: [WellnessTheme.accent.opacity(0.2), .clear], startPoint: .top, endPoint: .bottom))
                     PointMark(x: .value("日期", measurement.date), y: .value("体重 kg", measurement.weightKg))
-                        .foregroundStyle(WellnessTheme.accent).symbolSize(24)
+                        .foregroundStyle(WellnessTheme.accent).symbolSize(32)
                 }
                 .chartYScale(domain: (low - 1)...(high + 1))
                 .chartYAxis { AxisMarks(position: .leading) }
@@ -566,7 +634,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, minHeight: 54)
                     .background(WellnessTheme.gradient, in: RoundedRectangle(cornerRadius: 17))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftPressStyle())
             .accessibilityHint("扫描并连接体脂秤")
         }
     }
@@ -590,8 +658,8 @@ private struct MetricTile: View {
             Image(systemName: icon)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(tint)
-                .frame(width: 32, height: 32)
-                .background(tint.opacity(0.13), in: Circle())
+                .frame(width: 40, height: 40)
+                .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(value)
@@ -606,9 +674,14 @@ private struct MetricTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         .padding(15)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 24).fill(WellnessTheme.card)
+            RoundedRectangle(cornerRadius: 24).fill(
+                LinearGradient(colors: [tint.opacity(0.13), tint.opacity(0.03)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(.white.opacity(0.36), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
@@ -708,8 +781,7 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                WellnessTheme.canvasGradient
-                    .ignoresSafeArea()
+                AmbientCanvas()
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
@@ -721,6 +793,7 @@ struct ProfileView: View {
                     }
                     .padding(20)
                     .padding(.bottom, 24)
+                    .frame(maxWidth: 640)
                     .frame(maxWidth: .infinity)
                 }
             }
@@ -753,7 +826,7 @@ struct ProfileView: View {
                 .background(WellnessTheme.accentMint, in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("让估算更贴近你")
+                Text("你的身体，你的节奏")
                     .font(.headline.weight(.bold))
                 Text("这些资料只保存在本机，用于计算身体组成。")
                     .font(.caption)
@@ -904,7 +977,7 @@ struct ProfileView: View {
                 .padding(.vertical, 11)
                 .background(isSelected ? WellnessTheme.accent : WellnessTheme.canvas.opacity(0.70), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPressStyle())
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -912,5 +985,120 @@ struct ProfileView: View {
 private struct ProfileView_Previews: PreviewProvider {
     static var previews: some View {
         ProfileView(profile: .constant(UserProfile()))
+    }
+}
+
+// MARK: - Shared visual language
+
+private struct GlassSurface: ViewModifier {
+    var radius: CGFloat = 24
+    var interactive = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(WellnessTheme.card, in: RoundedRectangle(cornerRadius: radius))
+                .overlay(RoundedRectangle(cornerRadius: radius).stroke(WellnessTheme.secondaryInk.opacity(0.2)))
+        } else if #available(iOS 26, *) {
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .rect(cornerRadius: radius))
+            } else {
+                content.glassEffect(.regular, in: .rect(cornerRadius: radius))
+            }
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius))
+                .overlay(RoundedRectangle(cornerRadius: radius).stroke(.white.opacity(0.35)))
+        }
+    }
+}
+
+private struct AmbientCanvas: View {
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        ZStack {
+            WellnessTheme.canvas
+            RadialGradient(colors: [WellnessTheme.accent.opacity(colorScheme == .dark ? 0.25 : 0.13), .clear],
+                           center: .topTrailing, startRadius: 0, endRadius: 520)
+            RadialGradient(colors: [Color.cyan.opacity(0.09), .clear],
+                           center: .leading, startRadius: 0, endRadius: 360)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+private struct SoftPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.65), value: configuration.isPressed)
+    }
+}
+
+private struct AnimatedReading: ViewModifier {
+    let value: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 17, *), !reduceMotion {
+            content.contentTransition(.numericText(value: value))
+                .animation(.snappy(duration: 0.35), value: value)
+        } else {
+            content
+        }
+    }
+}
+
+private struct DialArtwork: View {
+    var body: some View {
+        ZStack {
+            ForEach(0..<36) { tick in
+                Capsule().fill(.white.opacity(tick % 3 == 0 ? 0.9 : 0.4))
+                    .frame(width: tick % 3 == 0 ? 3 : 2, height: tick % 3 == 0 ? 12 : 6)
+                    .offset(y: -52).rotationEffect(.degrees(Double(tick) * 10))
+            }
+        }
+    }
+}
+
+private struct ScaleEmblem: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    var body: some View {
+        GeometryReader { geometry in
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || scenePhase != .active)) { timeline in
+                let phase = reduceMotion || scenePhase != .active ? 0 : sin(timeline.date.timeIntervalSinceReferenceDate * 1.7)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 21)
+                        .fill(.white.opacity(0.13))
+                        .scaleEffect(1 + phase * 0.045)
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(.white.opacity(0.85), lineWidth: 2)
+                        .padding(7)
+                    UnevenScaleArc().stroke(.white, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .frame(width: 25, height: 17).offset(y: -5)
+                    Capsule().fill(Color(red: 0.64, green: 0.96, blue: 0.84))
+                        .frame(width: 3, height: 14)
+                        .rotationEffect(.degrees(-25 + phase * 8), anchor: .bottom).offset(y: -6)
+                    HStack(spacing: 13) {
+                        Capsule().fill(.white.opacity(0.7)).frame(width: 8, height: 3)
+                        Capsule().fill(.white.opacity(0.7)).frame(width: 8, height: 3)
+                    }.offset(y: 15)
+                }
+                .frame(width: 64, height: 64)
+                .scaleEffect(min(geometry.size.width, geometry.size.height) / 64)
+                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct UnevenScaleArc: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addArc(center: CGPoint(x: rect.midX, y: rect.maxY), radius: rect.width / 2,
+                    startAngle: .degrees(205), endAngle: .degrees(335), clockwise: false)
+        return path
     }
 }
